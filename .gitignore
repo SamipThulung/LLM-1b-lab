@@ -222,3 +222,5 @@ dataset_03/TinyStories-train.bin
 megatron_07/megatron_2b.bin
 megatron_07/cache/
 megatron_07/megatron_2b.idx
+verify_all.py
+checkpoints

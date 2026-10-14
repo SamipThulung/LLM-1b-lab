@@ -3,27 +3,27 @@ import os
 import random
 import torch
 
-from gpro_08.helper import generate_rollouts, grpo_train_step
-from gpro_08.load_model import (load_model, load_dataset, get_ground_truth,
+from grpo_08.helper import generate_rollouts, grpo_train_step
+from grpo_08.load_model import (load_model, load_dataset, get_ground_truth,
                                 make_prompt, save_checkpoint, load_checkpoint)
-from gpro_08.dan_hendrycks_parser import r1_zero_reward_fn
+from grpo_08.dan_hendrycks_parser import r1_zero_reward_fn
 
 # Set device exactly once here. All helpers receive this device explicitly.
-DEVICE = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-SEED = 42
-NUM_STEPS = 2
+DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+SEED = 102
+NUM_STEPS = 10
 GROUP_SIZE = 8
-PROMPTS_PER_STEP = 1
-GRADIENT_ACCUMULATION_STEPS = 8
-MAX_NEW_TOKENS = 128
+PROMPTS_PER_STEP = 2
+GRADIENT_ACCUMULATION_STEPS = 16
+MAX_NEW_TOKENS = 256
 TEMPERATURE = 1.0
 LEARNING_RATE = 1e-5
 MAX_GRAD_NORM = 1.0
-SAVE_EVERY = 10
-TRAIN_PATH = 'dataset_03/gsmk_train.jsonl'
-CHECKPOINT_DIR = 'checkpoints'
-LOG_PATH = 'training_metrics.csv'
-RESUME_FROM = None  
+SAVE_EVERY = 5
+TRAIN_PATH = "dataset_03/gsmk_train.jsonl"
+CHECKPOINT_DIR = "checkpoints"
+LOG_PATH = "training_metrics.csv"
+RESUME_FROM = None
 
 
 def main():

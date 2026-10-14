@@ -87,10 +87,53 @@ def generate_rollouts(model, tokenizer, prompts, ground_truths, group_size, max_
             input_ids=encoded, attention_mask=torch.ones_like(encoded),
             do_sample=True, temperature=temperature, num_return_sequences=group_size,
             max_new_tokens=max_new_tokens, pad_token_id=tokenizer.pad_token_id,
-            eos_token_id=tokenizer.eos_token_id, use_cache=True,
+            eos_token_id=tokenizer.eos_token_id, use_cache=True,stop_strings=["</answer>"], 
+            tokenizer=tokenizer,
         )
         for output in outputs:
             response = output[len(ids):].tolist()
             if tokenizer.eos_token_id in response:
                 response = response[:response.index(tokenizer.eos_token_id) + 1]
             if not response:
+                raise RuntimeError('Generation returned empty response')
+            repeated_prompts.append(prompt)
+            texts.append(tokenizer.decode(response, skip_special_tokens=True))
+            truths.append(truth)
+            all_prompt_ids.append(ids)
+            all_response_ids.append(response)
+    return repeated_prompts, texts, truths, all_prompt_ids, all_response_ids
+
+
+def grpo_train_step(model, tokenizer, optimizer, gradient_accumulation_steps,
+                    max_grad_norm, reward_fn, rollout_responses, repeated_ground_truths,
+                    prompt_token_ids, response_token_ids, group_size, device,
+                    use_bf16=True):
+    raw_rewards, reward_meta = compute_rollout_rewards(reward_fn, rollout_responses, repeated_ground_truths)
+    advantages, advantage_meta = compute_group_normalized_rewards(raw_rewards, group_size)
+    advantages = advantages.to(device)
+    batch = len(rollout_responses)
+    if batch == 0 or batch % gradient_accumulation_steps:
+        raise ValueError('Rollout batch size must be divisible by gradient_accumulation_steps')
+    microbatch = batch // gradient_accumulation_steps
+    model.train()
+    optimizer.zero_grad(set_to_none=True)
+    total_loss = 0.0
+    for start in range(0, batch, microbatch):
+        stop = start + microbatch
+        tensors = tokenize_prompt_and_output(prompt_token_ids[start:stop], response_token_ids[start:stop],
+                                              tokenizer.pad_token_id, device)
+        with torch.autocast(device_type='cuda', dtype=torch.bfloat16,
+                            enabled=use_bf16 and device.type == 'cuda'):
+            result = get_response_log_probs(model, tensors['input_ids'], tensors['labels'],
+                                            tensors['attention_mask'], return_token_entropy=False)
+            token_loss = compute_policy_gradient_loss(advantages[start:stop], result['log_probs'])
+            loss = aggregate_loss_across_microbatch(token_loss, tensors['response_mask'])
+        (loss / gradient_accumulation_steps).backward()
+        total_loss += loss.detach().item() / gradient_accumulation_steps
+    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm) if max_grad_norm is not None else None
+    optimizer.step()
+    optimizer.zero_grad(set_to_none=True)
+    return total_loss, {
+        **reward_meta, **advantage_meta,
+        'grad_norm': float(grad_norm.item()) if grad_norm is not None else float('nan'),
+    }
