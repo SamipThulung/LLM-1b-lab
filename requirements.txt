@@ -2,3 +2,10 @@ gdown
 einops
 tokenizers
 megatron-core
+transformers 
+accelerate 
+sympy
+latex2sympy2_extended 
+math-verify 
+pylatexenc 
+antlr4-python3-runtime
