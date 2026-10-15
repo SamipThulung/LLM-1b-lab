@@ -230,3 +230,4 @@ megatron_07/logs/diagnostic_first_100.csv
 megatron_07/verify_megatron.py
 megatron_07/verify_first_100
 megatron_07/verify_first_100.py
+gcloud auth login/

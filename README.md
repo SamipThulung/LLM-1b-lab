@@ -66,3 +66,10 @@ Full model parameters: 786,853,120
 Model size: 786.85M
 ********************************
 
+Painless way GCP
+curl https://sdk.cloud.google.com | bash
+Restart. 
+gcloud auth login
+gcloud config set project llms-511402
+gcloud storage cp -r megatron_07/checkpoints_l/step_00000400 gs://llm_model_samip
+
