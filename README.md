@@ -59,3 +59,10 @@ l iteration   99 | lr 3.01e-05 | loss 1.9120 | grad_norm 1.2634242668657127 | st
 Generated output:
 There is a lot of things that I can do with my own. I have a lot of fun and I can’t get to know what I’m doing. I
 
+l-model:
+********************************
+GPU 0 parameters: 393,473,280
+Full model parameters: 786,853,120
+Model size: 786.85M
+********************************
+

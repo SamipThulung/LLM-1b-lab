@@ -224,3 +224,9 @@ megatron_07/cache/
 megatron_07/megatron_2b.idx
 verify_all.py
 checkpoints
+megatron_07/checkpoints_l/
+megatron_07/check_pad_collision.py
+megatron_07/logs/diagnostic_first_100.csv
+megatron_07/verify_megatron.py
+megatron_07/verify_first_100
+megatron_07/verify_first_100.py

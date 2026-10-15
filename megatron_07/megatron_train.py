@@ -4,6 +4,8 @@ import os
 import random
 from contextlib import contextmanager
 import time
+from pathlib import Path
+import csv
 
 # torch and numpy imports
 import numpy as np
@@ -42,14 +44,22 @@ DATASET_FILEPATH = "megatron_07/megatron_2b"
 TOKENIZER_PATH = "tokenizer_02/fineweb_bpe_32k.json"
 CACHE_PATH = "megatron_07/cache"
 
-MICRO_BATCH_SIZE = 4
-NUM_MICROBATCHES = 4
-CONTEXT_LENGTH = 512
+MICRO_BATCH_SIZE = 2
+NUM_MICROBATCHES = 8
+CONTEXT_LENGTH = 1024
 VOCAB_SIZE = 32000
-NUM_ITERATIONS = 2000
 
+NUM_ITERATIONS = 122071
 
-MODEL_SIZE = "m"
+SAVE_INTERVAL = 100
+GENERATION_INTERVAL = 75
+RESUME = True
+MODEL_SIZE = "l"
+CHECKPOINT_DIR = f"megatron_07/checkpoints_{MODEL_SIZE}"
+LOG_DIR = "megatron_07/logs"
+LOG_FILE = f"{LOG_DIR}/training_{MODEL_SIZE}.csv"
+
+MAX_NEW_TOKENS = 1024
 
 # Parallelism
 TP_SIZE = 2
@@ -109,7 +119,22 @@ def setup(rank, world_size):
         pipeline_model_parallel_size=PP_SIZE,
     )
 
+def log_training_metrics(metrics):
+    os.makedirs(LOG_DIR, exist_ok=True)
 
+    file_exists = os.path.exists(LOG_FILE)
+
+    with open(LOG_FILE, "a", newline="") as f:
+        writer = csv.DictWriter(
+            f,
+            fieldnames=list(metrics.keys()),
+        )
+
+        if not file_exists or os.path.getsize(LOG_FILE) == 0:
+            writer.writeheader()
+
+        writer.writerow(metrics)
+        
 def cleanup():
     parallel_state.destroy_model_parallel()
     dist.destroy_process_group()
@@ -218,151 +243,120 @@ def forward_step_func(data_iterator, model):
 
     return output, loss_func
 
+def save_checkpoint(model, optimizer, completed_steps, rank):
+    """Write one checkpoint shard per rank, then publish a complete step."""
+    folder = Path(CHECKPOINT_DIR) / f"step_{completed_steps:08d}"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"rank_{rank}.pt"
+    tmp = folder / f"rank_{rank}.pt.tmp"
+
+    torch.save({
+        "completed_steps": completed_steps,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "torch_rng": torch.get_rng_state(),
+        "cuda_rng": torch.cuda.get_rng_state(),
+        "numpy_rng": np.random.get_state(),
+        "python_rng": random.getstate(),
+    }, tmp)
+    os.replace(tmp, path)
+    dist.barrier()
+
+    if rank == 0:
+        latest = Path(CHECKPOINT_DIR) / "latest.txt"
+        latest_tmp = Path(CHECKPOINT_DIR) / "latest.txt.tmp"
+        latest_tmp.write_text(str(completed_steps))
+        os.replace(latest_tmp, latest)
+        print(f"Saved checkpoint at step {completed_steps}", flush=True)
+    dist.barrier()
+
+
+def load_checkpoint(model, optimizer, rank):
+    """All ranks agree on the most recently completed checkpoint."""
+    latest = Path(CHECKPOINT_DIR) / "latest.txt"
+    step = int(latest.read_text().strip()) if rank == 0 and latest.exists() else 0
+    step_tensor = torch.tensor([step], device=f"cuda:{rank}", dtype=torch.long)
+    dist.broadcast(step_tensor, src=0)
+    step = int(step_tensor.item())
+    if step == 0:
+        return 0
+
+    path = Path(CHECKPOINT_DIR) / f"step_{step:08d}" / f"rank_{rank}.pt"
+    checkpoint = torch.load(path, map_location=f"cuda:{rank}", weights_only=False)
+    model.load_state_dict(checkpoint["model"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    torch.set_rng_state(checkpoint["torch_rng"].cpu())
+    torch.cuda.set_rng_state(checkpoint["cuda_rng"].cpu())
+    np.random.set_state(checkpoint["numpy_rng"])
+    random.setstate(checkpoint["python_rng"])
+    if rank == 0:
+        print(f"Resumed from step {step}", flush=True)
+    return step
+
+
 @torch.no_grad()
 def test_generation(model, tokenizer, rank):
-
+    """Greedy generation, compatible with TP-sharded or full-vocab logits."""
     model.eval()
-
-    prompts = [
-        "There is a",
-        "Once upon a time",
-    ]
-
-    MAX_NEW_TOKENS = 30
-
     tp_group = parallel_state.get_tensor_model_parallel_group()
-    tp_rank = parallel_state.get_tensor_model_parallel_rank()
+    tp_size = parallel_state.get_tensor_model_parallel_world_size()
+    tp_src_rank = parallel_state.get_tensor_model_parallel_src_rank()
+    device = torch.device(f"cuda:{rank}")
 
-    vocab_per_partition = VOCAB_SIZE // TP_SIZE
+    eos_id = getattr(tokenizer, "eod", None)
+    if eos_id is None:
+        eos_id = tokenizer._tok.token_to_id("<|endoftext|>")
 
-    for prompt_idx, prompt in enumerate(prompts):
+    prompts = ["There is a", "Once upon a time"]
+    for prompt in prompts:
+        prompt_ids = tokenizer._tok.encode(prompt, add_special_tokens=False).ids
+        generated = torch.tensor([prompt_ids], dtype=torch.long, device=device)
+        max_new = min(MAX_NEW_TOKENS, CONTEXT_LENGTH - len(prompt_ids))
 
-        input_ids = tokenizer._tok.encode(prompt).ids
-
-        generated = torch.tensor(
-            input_ids,
-            dtype=torch.long,
-            device=torch.cuda.current_device(),
-        ).unsqueeze(0)
-
-        for _ in range(MAX_NEW_TOKENS):
-
-            seq_len = generated.shape[1]
-
-            position_ids = torch.arange(
-                seq_len,
-                device=generated.device,
-                dtype=torch.long,
-            ).unsqueeze(0)
-
+        for _ in range(max_new):
+            seq_len = generated.size(1)
+            position_ids = torch.arange(seq_len, device=device).unsqueeze(0)
             attention_mask = torch.triu(
-                torch.ones(
-                    1,
-                    1,
-                    seq_len,
-                    seq_len,
-                    dtype=torch.bool,
-                    device=generated.device,
-                ),
+                torch.ones((1, 1, seq_len, seq_len), device=device, dtype=torch.bool),
                 diagonal=1,
             )
-
-            output = model(
+            logits = model(
                 input_ids=generated,
                 position_ids=position_ids,
                 attention_mask=attention_mask,
                 labels=None,
-            )
+            )[:, -1, :]
 
-            # [1, seq_len, 16000]
-            logits = output[:, -1, :]
+            if logits.size(-1) == VOCAB_SIZE:
+                # Model has already gathered the vocabulary.
+                next_id = logits.argmax(dim=-1).view(1, 1)
+            elif logits.size(-1) * tp_size == VOCAB_SIZE:
+                # Each TP rank holds a contiguous vocabulary shard.
+                local_value, local_index = logits.max(dim=-1)
+                local_index += parallel_state.get_tensor_model_parallel_rank() * logits.size(-1)
+                all_values = [torch.empty_like(local_value) for _ in range(tp_size)]
+                all_indices = [torch.empty_like(local_index) for _ in range(tp_size)]
+                dist.all_gather(all_values, local_value, group=tp_group)
+                dist.all_gather(all_indices, local_index, group=tp_group)
+                winner = torch.stack(all_values).argmax(dim=0)
+                next_id = torch.stack(all_indices).gather(0, winner.unsqueeze(0)).view(1, 1)
+            else:
+                raise ValueError(f"Unexpected vocabulary dimension: {logits.shape}")
 
-            local_values, local_indices = torch.max(
-                logits,
-                dim=-1,
-            )
-
-            local_global_index = (
-                local_indices
-                + tp_rank * vocab_per_partition
-            )
-
-            candidates = torch.stack(
-                [
-                    local_values,
-                    local_global_index.float(),
-                ]
-            )
-            gathered_values = [
-                torch.empty_like(local_values)
-                for _ in range(TP_SIZE)
-            ]
-
-            gathered_indices = [
-                torch.empty_like(local_global_index)
-                for _ in range(TP_SIZE)
-            ]
-
-            dist.all_gather(
-                gathered_values,
-                local_values,
-                group=tp_group,
-            )
-
-            dist.all_gather(
-                gathered_indices,
-                local_global_index,
-                group=tp_group,
-            )
-
-            gathered_values = torch.stack(gathered_values)
-            gathered_indices = torch.stack(gathered_indices)
-
-            winner_rank = torch.argmax(
-                gathered_values[:, 0]
-            )
-
-            next_token = gathered_indices[
-                winner_rank,
-                0,
-            ].view(1, 1)
-
-            generated = torch.cat(
-                [generated, next_token],
-                dim=1,
-            )
+            # Ensure all TP ranks append exactly the same token.
+            dist.broadcast(next_id, src=tp_src_rank, group=tp_group)
+            generated = torch.cat([generated, next_id], dim=1)
+            if eos_id is not None and next_id.item() == eos_id:
+                break
 
         if rank == 0:
-
-            token_ids = generated[0].tolist()
-
-            print("\n" + "=" * 70)
-            print(f"OUT-OF-THE-BOX PROMPT {prompt_idx + 1}")
-            print("=" * 70)
-
-            print("\nPrompt:")
-            print(prompt)
-
-            print("\nToken IDs:")
-            print(token_ids)
-
-            print("\nTokens:")
-
-            for token_id in token_ids:
-                token_string = tokenizer._tok.decode(
-                    [token_id]
-                )
-
-                print(
-                    f"{token_id:5d} -> {repr(token_string)}"
-                )
-
-            print("\nGenerated output:")
-            print(
-                tokenizer._tok.decode(token_ids)
-            )
-
-    model.eval()
+            response_ids = generated[0, len(prompt_ids):].tolist()
+            print("\n" + "=" * 60)
+            print(f"PROMPT: {prompt}")
+            print(f"GENERATED TOKENS: {len(response_ids)}")
+            print(f"RESPONSE: {tokenizer._tok.decode(response_ids, skip_special_tokens=True)}")
+            print("=" * 60, flush=True)
+    model.train()
 
 
 def train(rank, world_size):
@@ -377,17 +371,51 @@ def train(rank, world_size):
 
     model = build_llama_model(MODEL_SIZES[MODEL_SIZE], VOCAB_SIZE, TP_SIZE, PP_SIZE, CONTEXT_LENGTH)
     model.cuda()
+    total_params = sum(p.numel() for p in model.parameters())
+    tp_rank = parallel_state.get_tensor_model_parallel_rank()
+    tp_group = parallel_state.get_tensor_model_parallel_group()
+    
+    local_params = sum(p.numel() for p in model.parameters())
+    # Count replicated parameters only once
+    unique_local_params = sum(
+        p.numel()
+        for p in model.parameters()
+        if getattr(p, "tensor_model_parallel", False) or tp_rank == 0
+    )
+    
+    total_params = torch.tensor(
+        unique_local_params,
+        device="cuda",
+        dtype=torch.long,
+    )
+    
+    dist.all_reduce(
+        total_params,
+        op=dist.ReduceOp.SUM,
+        group=tp_group,
+    )
+    if rank == 0:
+        print("*" * 32)
+        print(f"GPU 0 parameters: {local_params:,}")
+        print(f"Full model parameters: {total_params.item():,}")
+        print(f"Model size: {total_params.item() / 1e6:.2f}M")
+        print("*" * 32)
     model = wrap_model_for_distributed_training(model)
 
     optimizer = build_optimizer(model, LR, MIN_LR, WEIGHT_DECAY, GRAD_CLIP)
     
     
+    start_iteration = load_checkpoint(model, optimizer, rank) if RESUME else 0
+
     train_dataloader = build_dataloader()
     train_iterator = iter(train_dataloader)
+    # Recreate the original sample position; each step consumes NUM_MICROBATCHES.
+    for _ in range(start_iteration * NUM_MICROBATCHES):
+        next(train_iterator)
 
     forward_backward_func = get_forward_backward_func()
 
-    for iteration in range(NUM_ITERATIONS):
+    for iteration in range(start_iteration, NUM_ITERATIONS):
         lr = get_lr(iteration)
 
         for group in optimizer.param_groups:
@@ -416,7 +444,8 @@ def train(rank, world_size):
 
         with time_block("Loss"):
             # Average loss over microbatches, then over the DP group.
-            mean_loss = torch.stack([l["lm loss"] for l in losses_per_microbatch]).mean()
+            # mean_loss = torch.stack([l["lm loss"] for l in losses_per_microbatch]).mean()
+            mean_loss = torch.stack([l["lm loss"] for l in losses_per_microbatch]).sum()
             # print(f"Loss: {mean_loss:0.5f}")
 
         with time_block("Synchronize"):
@@ -427,6 +456,22 @@ def train(rank, world_size):
             )
 
         if rank == 0:
+            metrics = {
+                "iteration": iteration + 1,
+                "loss": mean_loss.item(),
+                "learning_rate": lr,
+                "grad_norm": (
+                    grad_norm.item()
+                    if isinstance(grad_norm, torch.Tensor)
+                    else grad_norm
+                ),
+                "step_ok": bool(update_successful),
+                "gpu_memory_gb": (
+                    torch.cuda.max_memory_allocated()
+                    / 1024**3
+                ),
+            }
+            log_training_metrics(metrics)
             print(
                 f"iteration {iteration:4d} | lr {lr:.2e} | "
                 f"loss {mean_loss.item():.4f} | "
@@ -435,22 +480,28 @@ def train(rank, world_size):
                 flush=True,
             )
 
+        if (iteration + 1) % SAVE_INTERVAL == 0:
+            save_checkpoint(model, optimizer, iteration + 1, rank)
+        if (iteration +1)% GENERATION_INTERVAL==0:
+            tokenizer = SimpleTokenizer(TOKENIZER_PATH)
+            dist.barrier()
+            test_generation(model=model,tokenizer=tokenizer,rank=rank,)
+            dist.barrier()
+            
+
+    if NUM_ITERATIONS > start_iteration and NUM_ITERATIONS % SAVE_INTERVAL != 0:
+        save_checkpoint(model, optimizer, NUM_ITERATIONS, rank)
+
     tokenizer = SimpleTokenizer(TOKENIZER_PATH)
 
     dist.barrier()
 
-    test_generation(
-        model=model,
-        tokenizer=tokenizer,
-        rank=rank,
-    )
+    test_generation(model=model,tokenizer=tokenizer,rank=rank)
 
     dist.barrier()
 
     cleanup()
 
-    # output testing. 
-    model
 
 
 if __name__ == "__main__":
