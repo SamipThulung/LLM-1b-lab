@@ -3,31 +3,37 @@ import os
 import random
 import torch
 
-from grpo_08.helper import generate_rollouts, grpo_train_step, grpo_val_step
+from grpo_08.helper import generate_rollouts, grpo_train_step, grpo_val_step, generate_val_rollouts
 from grpo_08.load_model import (load_model, load_dataset, get_ground_truth,
                                 make_prompt, save_checkpoint, load_checkpoint)
 from grpo_08.dan_hendrycks_parser import r1_zero_reward_fn
 
 # Set device exactly once here. All helpers receive this device explicitly.
 DEVICE = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 SEED = 102
-NUM_STEPS = 10
+NUM_STEPS = 1000
 GROUP_SIZE = 8
-PROMPTS_PER_STEP = 2
+PROMPTS_PER_STEP = 4
 GRADIENT_ACCUMULATION_STEPS = 16
 MAX_NEW_TOKENS = 256
 TEMPERATURE = 1.0
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 3e-7
 MAX_GRAD_NORM = 1.0
-SAVE_EVERY = 5
+SAVE_EVERY = 100
 TRAIN_PATH = "dataset_03/gsmk_train.jsonl"
-CHECKPOINT_DIR = "checkpoints"
-LOG_PATH = "training_metrics.csv"
-RESUME_FROM = None
+# CHECKPOINT_DIR = "grpo_08/checkpoints"
+# LOG_PATH = "grpo_08/training_metrics_200.csv"
+RESUME_FROM = "grpo_08/checkpoints_pad_fixed/step_450"
+
+CHECKPOINT_DIR = 'grpo_08/checkpoints_pad_fixed'
+LOG_PATH = 'grpo_08/training_metrics_pad_fixed.csv'
+VAL_LOG = 'grpo_08/validation_metrics_pad_fixed.csv'
 
 VAL_PATH = "dataset_03/gsmk_test.jsonl"
-VAL_SUBSET_SIZE = 8
-VAL_LOG = "validation_metrics.csv"
+VAL_SUBSET_SIZE = 256
+VAL_BATCH_SIZE = 16
+# VAL_LOG = "grpo_08/validation_metrics_200.csv"
 
 
 def main():
@@ -39,6 +45,10 @@ def main():
 
     if RESUME_FROM:
         model, tokenizer, optimizer, start_step = load_checkpoint(RESUME_FROM, DEVICE, LEARNING_RATE)
+        print("*"*90)
+        for group in optimizer.param_groups:
+            group['lr'] = LEARNING_RATE
+        print("Actual LR:", optimizer.param_groups[0]["lr"])
     else:
         model, tokenizer = load_model(DEVICE)
         optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE,
@@ -92,19 +102,29 @@ def main():
                 completed, loss, metrics['mean_reward'], metrics['format_reward'],
                 metrics['grad_norm'], metrics['nonconstant_group_fraction'],
             ])
+
         print(f"Step {completed}/{NUM_STEPS} | loss {loss:.4f} | "
               f"reward {metrics['mean_reward']:.3f} | "
               f"format {metrics['format_reward']:.3f} | "
               f"grad_norm {metrics['grad_norm']:.3f} | "
               f"informative_groups {metrics['nonconstant_group_fraction']:.2%}")
-        print('Example response:', responses[0][:1000])
+
 
         if completed % SAVE_EVERY == 0:
+            print(f"\n{'='*60}")
+            print(f"\n{'='*60}")
+            print(f"Step {completed} | Training Example")
+            print(f"{'='*60}")
+            print(f"Question: {selected[0]['question']}")
+            print(f"Ground truth: {truths[0]}")
+            print(f"Response: {responses[0]}")
+            print(f"{'='*60}\n")
             print(f'Running validation at step {completed}...')
 
-            _, val_responses, val_repeated_truths, _, _ = generate_rollouts(
-                model, tokenizer, val_prompts, val_truths, 1, MAX_NEW_TOKENS, TEMPERATURE, DEVICE)
-
+            val_responses = generate_val_rollouts(
+                model, tokenizer, val_prompts, VAL_BATCH_SIZE, MAX_NEW_TOKENS, DEVICE)
+            val_repeated_truths = val_truths
+            
             val_metrics = grpo_val_step(
                 model=model, reward_fn=r1_zero_reward_fn,
                 rollout_responses=val_responses, repeated_ground_truths=val_repeated_truths,
@@ -116,10 +136,18 @@ def main():
                     val_metrics['format_reward'], val_metrics['num_examples'],
                 ])
 
+            print(f"\n{'='*60}")
             print(f"Validation step {completed} | "
                   f"accuracy {val_metrics['accuracy']:.3f} | "
                   f"reward {val_metrics['mean_reward']:.3f} | "
                   f"format {val_metrics['format_reward']:.3f}")
+            print(f"\n{'='*60}")
+            print(f"Step {completed} | Validation Example")
+            print(f"{'='*60}")
+            print(f"Question: {val_subset[0]['question']}")
+            print(f"Ground truth: {val_truths[0]}")
+            print(f"Response: {val_responses[0]}")
+            print(f"{'='*60}\n")
 
             save_checkpoint(model, tokenizer, optimizer, completed, CHECKPOINT_DIR)
 

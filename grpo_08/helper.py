@@ -92,6 +92,15 @@ def generate_rollouts(model, tokenizer, prompts, ground_truths, group_size, max_
         )
         for output in outputs:
             response = output[len(ids):].tolist()
+            
+            # Remove padding added after a completed response.
+            if tokenizer.pad_token_id in response:
+                response = response[:response.index(tokenizer.pad_token_id)]
+            
+            # Keep the generated EOS token, if present.
+            if tokenizer.eos_token_id in response:
+                response = response[:response.index(tokenizer.eos_token_id) + 1]
+            
             if tokenizer.eos_token_id in response:
                 response = response[:response.index(tokenizer.eos_token_id) + 1]
             if not response:
@@ -159,3 +168,37 @@ def grpo_val_step(
         "accuracy": (raw_rewards > 0).float().mean().item(),
         "num_examples": len(rollout_responses),
     }
+@torch.inference_mode()
+def generate_val_rollouts(model, tokenizer, prompts, batch_size=16, max_new_tokens=256, device='cuda'):
+    model.eval()
+    responses = []
+    old_padding_side = tokenizer.padding_side
+    tokenizer.padding_side = 'left'
+
+    try:
+        for start in range(0, len(prompts), batch_size):
+            batch = prompts[start:start + batch_size]
+            encoded = tokenizer(batch, return_tensors='pt', padding=True,
+                                add_special_tokens=False).to(device)
+            prompt_length = encoded['input_ids'].shape[1]
+
+            outputs = model.generate(
+                **encoded,
+                do_sample=False,
+                max_new_tokens=max_new_tokens,
+                pad_token_id=tokenizer.pad_token_id,
+                eos_token_id=tokenizer.eos_token_id,
+                use_cache=True,
+                stop_strings=['</answer>'],
+                tokenizer=tokenizer,
+            )
+
+            for output in outputs:
+                response_ids = output[prompt_length:].tolist()
+                if tokenizer.eos_token_id in response_ids:
+                    response_ids = response_ids[:response_ids.index(tokenizer.eos_token_id) + 1]
+                responses.append(tokenizer.decode(response_ids, skip_special_tokens=True))
+    finally:
+        tokenizer.padding_side = old_padding_side
+
+    return responses

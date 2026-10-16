@@ -231,3 +231,7 @@ megatron_07/verify_megatron.py
 megatron_07/verify_first_100
 megatron_07/verify_first_100.py
 gcloud auth login/
+grpo_08/Untitled.ipynb
+grpo_08/checkpoints_pad_fixed/
+grpo_08/validate_steps.py
+grpo_08/verify_train.py
