@@ -137,3 +137,25 @@ def grpo_train_step(model, tokenizer, optimizer, gradient_accumulation_steps,
         **reward_meta, **advantage_meta,
         'grad_norm': float(grad_norm.item()) if grad_norm is not None else float('nan'),
     }
+
+@torch.no_grad()
+def grpo_val_step(
+    model,
+    reward_fn,
+    rollout_responses,
+    repeated_ground_truths,
+):
+    model.eval()
+
+    raw_rewards, reward_meta = compute_rollout_rewards(
+        reward_fn,
+        rollout_responses,
+        repeated_ground_truths,
+    )
+
+    return {
+        "mean_reward": reward_meta["mean_reward"],
+        "format_reward": reward_meta["format_reward"],
+        "accuracy": (raw_rewards > 0).float().mean().item(),
+        "num_examples": len(rollout_responses),
+    }
