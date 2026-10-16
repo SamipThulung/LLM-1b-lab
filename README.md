@@ -1,4 +1,4 @@
-# LLM 1 Billion lab
+# LLM 1B lab
 A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model from scratch. dataset is fineWeb for internet data and Grade School Math 8K for alignment RL model. Distrubuted training DP, TP, FSDP(Zero3 sharding). Includes implementation of Jit kernels and Custom Autograd Fuction. Also Exploring Memory optimization techniques like Fusion Operations and recomputation. 
 
 # Content
