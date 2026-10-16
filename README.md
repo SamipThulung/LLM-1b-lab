@@ -1,5 +1,5 @@
 # LLM 1 Billion lab
-A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model from scratch. dataset is fineWeb for internet data and Grade School Math 8K for alignment RL model
+A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model from scratch. dataset is fineWeb for internet data and Grade School Math 8K for alignment RL model. Distrubuted training DP, TP, FSDP(Zero3 sharding). Includes implementation of Jit kernels and Custom Autograd Fuction. Also Exploring Memory optimization techniques like Fusion Operations and recomputation. 
 
 # Content
 ```text
@@ -201,6 +201,7 @@ GENERATED TOKENS: 91
 ============================================================
 ```
 7. Maths
+
 The maths for FlashAttention2 and GRPO, PPO are presented as pdf inside the directory below
 ```text
 1. flashattention2_09/
