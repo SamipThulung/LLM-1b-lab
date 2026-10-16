@@ -39,7 +39,7 @@ A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model fr
 # Dataset
 
 1. fineWeb
-	It is the internet data to train the base language model with 2 Trillion tokens
+	It is the internet data to train the base language model with 2 Billion tokens
 
 2. GSM8K
 	Grade School Math data for post training alignment. 
