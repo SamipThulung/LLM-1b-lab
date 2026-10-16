@@ -200,3 +200,15 @@ TEMPERATURE: 0.8
 GENERATED TOKENS: 91
 ============================================================
 ```
+7. Maths
+The maths for FlashAttention2 and GRPO, PPO are presented as pdf inside the directory below
+```text
+1. flashattention2_09/
+	|_ sharded_flashattention2_foward_pass.pdf
+	|_ VanillaSoftmax.pdf
+2. grpo_08
+	|_ objective_advantage.pdf
+
+```
+
+
