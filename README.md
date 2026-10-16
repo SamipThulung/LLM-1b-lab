@@ -21,11 +21,18 @@ A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model fr
 </p>
 
 # Generation Results
+
+1. Base model output. Language Flow, Understanding structure and creating base knowledge
 <p align="center">
   <img src="assets/base_response_1.png" width="700">
 </p>
 <p align="center">
   <img src="assets/base_response_2.png" width="700">
+</p>
+
+2. Alignment RL learning. Align the base model to Follow instruction for solving Math problems. 
+<p align="center">
+  <img src="assets/alignment.png" width="700">
 </p>
 
 # Dataset
