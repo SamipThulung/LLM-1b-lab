@@ -16,6 +16,8 @@ A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model fr
 <p align="center">
 	1. Base model training loss
 	<img src="assets/base_loss.png" width="40%">
+</p>
+<p align="center">
 	2. Alignment RL training loss
 	<img src="assets/grpo_loss.png" width="60%">
 	
