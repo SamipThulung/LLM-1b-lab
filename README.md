@@ -78,6 +78,9 @@ Using distributed training on 2 A40 or 2 L4
 1. Benchmarking
 2. Profiling (nvtx, nsight)
 
+# vLLM serving
+1. Qwen14B bfloat16
+
 
 # Appendix
 
@@ -218,6 +221,47 @@ The maths for FlashAttention2 and GRPO, PPO are presented as pdf inside the dire
 2. grpo_08
 	|_ objective_advantage.pdf
 
+```
+8. vLLM serving
+
+```cmd
+python -m pip install -U huggingface_hub
+
+python -m pip install -U pip
+python -m pip install vllm openai
+
+mkdir -p vllm_serving_10/models
+
+hf download Qwen/Qwen3-14B \
+    --local-dir vllm_serving_10/models
+
+vllm serve vllm_serving_10/models \
+    --served-model-name Qwen3-14B \
+    --dtype bfloat16 \
+    --tensor-parallel-size 1 \
+    --max-model-len 4096 \
+    --gpu-memory-utilization 0.90 \
+    --host 0.0.0.0 \
+    --port 8000
+
+curl http://localhost:8000/v1/models
+
+curl http://localhost:8000/v1/chat/completions \
+    -H "Content-Type: application/json" \
+    -d '{
+        "model": "Qwen3-14B",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Explain tensor parallelism in two sentences."
+            }
+        ],
+        "max_tokens": 256,
+        "temperature": 0.7,
+        "chat_template_kwargs": {
+            "enable_thinking": false
+        }
+    }'
 ```
 
 
