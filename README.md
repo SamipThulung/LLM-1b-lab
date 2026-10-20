@@ -10,6 +10,7 @@ A hands-on, modular repo to pretraining, scaling, and aligning a 1B LLM model fr
 5. fsdp_06
 6. megatron_07
 8. grpo_08
+9. vLLM serving
 ```
 
 # Training Figure
